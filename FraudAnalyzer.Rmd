@@ -1,0 +1,1208 @@
+---
+title: "Applying Predictions on the Insurance Dataset"
+author: "Pablo Castillo Garita"
+date: "2024-06-30"
+output:
+  html_document: 
+    toc: true
+    toc_depth: 5
+    toc_float: true
+    fig_width: 10
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r echo=FALSE}
+set.seed(123)
+```
+
+## 1. Loading and cleaning Data
+<div style="text-align: justify;">
+Before loading the csv file, you have to visualize the csv in a notepad, to know which arguments to assign to the `read.csv` function. In this case it has a header, has qualitative variables that can be converted into factors and uses a semicolon as a separator.
+</div>
+```{r}
+seguro <- read.csv(
+  "Seguros.csv",
+  header = TRUE,
+  stringsAsFactors = TRUE,
+  sep = ";"
+)
+```
+
+<div style="text-align: justify;">
+After loading the data it is advisable to do a `str` on the dataframe to know if the data was loaded correctly.
+</div>
+
+```{r}
+str(seguro)
+```
+
+<div style="text-align: justify;">
+We can convert the variable interest into an ordered factor.
+</div>
+
+```{r}
+seguro$Interes <- factor(seguro$Interes, ordered = TRUE)
+```
+
+<div style="text-align: justify;">
+It is of great importance to check if there are null values in the dataframe and if there are, to impute them. In this case there are not.
+</div>
+
+```{r}
+sum(is.na(seguro))
+```
+
+<div style="text-align: justify;">
+The density of the variable to be predicted will be displayed as follows.
+</div>
+
+```{r echo=FALSE}
+barplot(prop.table(table(seguro$Fraude)), col = c("cyan", "pink"), main = "Distribution of the variable to be predicted")
+```
+
+<div style="text-align: justify;">
+As can be seen in the density plot above, the problem is highly unbalanced. It may be more difficult to accurately predict the `Fraude` variable.
+</div>
+
+## 2. Training and Testing Table
+<div style="text-align: justify;">
+Now we divide the data into two tables to create the training table and the testing table, this division will be 75-25, that is 75% of the data for the training table and the remaining 25% for the testing table.
+</div>
+
+```{r}
+size <- dim(seguro)
+n <- size[1]
+sample <- sample(1:n, floor(n * 0.25))
+
+training_table <- seguro[-sample, ]
+testing_table <- seguro[sample, ]
+```
+
+## 3. Function to Calculate Metrics
+<div style="text-align: justify;">
+This is a function that will help us to calculate the main indicators of the confusion matrices and to know how good our prediction model is.
+</div>
+
+```{r}
+calculate_metrics <- function(confusion_matrix) {
+  TN <- confusion_matrix[1,1]
+  FN <- confusion_matrix[2,1]
+  FP <- confusion_matrix[1,2]
+  TP <- confusion_matrix[1,1]
+  N <- TN + FP
+  P <- FN + TP
+  
+  global_accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+  global_error <- 1 - global_accuracy
+  positive_precision <- TP/P
+  negative_precision <- TN/N
+  false_positives <- FP/(TN+FP)
+  false_negatives <- FN/(FN+TP)
+  positive_assertivity <- TP/(FP+TP)
+  negative_assertivity <- TN/(TN+FN)
+  category_accuracy <- diag(confusion_matrix) / rowSums(confusion_matrix)
+  
+  results <- list(
+    confusion_matrix = round(confusion_matrix, 4),
+    global_accuracy = round(global_accuracy, 4),
+    global_error = round(global_error, 4),
+    positive_precision = round(positive_precision, 4),
+    negative_precision = round(negative_precision, 4),
+    false_positives = round(false_positives, 4),
+    false_negatives = round(false_negatives, 4),
+    positive_assertivity = round(positive_assertivity, 4),
+    negative_assertivity = round(negative_assertivity, 4),
+    category_accuracy = round(category_accuracy, 4)
+  )
+  
+  names(results) <- c(
+    "Confusion Matrix",
+    "Global Accuracy",
+    "Global Error",
+    "Positive Precision",
+    "Negative Precision",
+    "False Positives",
+    "False Negatives",
+    "Positive Assertivity",
+    "Negative Assertivity",
+    "Category Accuracy"
+  )
+  
+  return(results)
+}
+```
+
+## 4. Predictive Models without calibration
+<div style="text-align: justify;">
+The following predictive models will now be applied to find out which one best fits our data.
+</div>
+
+### a. k-Nearest Neighbor Classifier
+```{r}
+library(kknn)
+
+model_kknn <- train.kknn(Fraude ~ ., data = training_table, kmax = floor(sqrt(n)))
+prediction_kknn <- predict(model_kknn, testing_table[, -12])
+cm_kknn <- table(testing_table[, 12], prediction_kknn)
+res_kknn <- calculate_metrics(cm_kknn)
+```
+
+### b. Decision Trees
+```{r}
+library(rpart)
+
+model_DT <- rpart(Fraude ~ ., data = training_table)
+prediction_DT <- predict(model_DT, testing_table, type = "class")
+cm_DT <- table(testing_table$Fraude, prediction_DT)
+res_DT <-  calculate_metrics(cm_DT)
+```
+
+```{r}
+library(rpart.plot)
+
+prp(model_DT, extra=104, branch.type=2, box.col=c("pink","cyan")[model_DT$frame$yval])
+```
+
+### c. Random Trees
+```{r}
+library(randomForest)
+
+model_RF <- randomForest(Fraude ~ ., data = training_table, importance = TRUE)
+prediction_RF <- predict(model_RF, testing_table[, -12])
+cm_RF <- table(testing_table$Fraude, prediction_RF)
+res_RF <- calculate_metrics(cm_RF)
+```
+
+```{r}
+varImpPlot(model_RF)
+```
+
+### d. Support Vector Machines (SVM)
+```{r}
+library(e1071)
+```
+
+#### i. Kernel Linear
+```{r}
+model_linear <- svm(Fraude ~ ., data = training_table, kernel = "linear")
+prediction_linear <- predict(model_linear, testing_table)
+cm_linear <- table(testing_table[, 12], prediction_linear)
+res_linear <- calculate_metrics(cm_linear)
+```
+
+#### ii. Kernel Radial
+```{r}
+model_radial <- svm(Fraude ~ ., data = training_table, kernel = "radial")
+prediction_radial <- predict(model_radial, testing_table)
+cm_radial <- table(testing_table[, 12], prediction_radial)
+res_radial <- calculate_metrics(cm_radial)
+```
+
+#### iii. Kernel Polynomial
+```{r}
+model_polynomial <- svm(Fraude ~ ., data = training_table, kernel = "polynomial")
+prediction_polynomial <- predict(model_polynomial, testing_table)
+cm_polynomial <- table(testing_table[, 12], prediction_polynomial)
+res_polynomial <- calculate_metrics(cm_polynomial)
+```
+
+#### iv. Kernel Sigmoid
+```{r}
+model_sigmoid <- svm(Fraude ~ ., data = training_table, kernel = "sigmoid")
+prediction_sigmoid <- predict(model_sigmoid, testing_table)
+cm_sigmoid <- table(testing_table[, 12], prediction_sigmoid)
+res_sigmoid <- calculate_metrics(cm_sigmoid)
+```
+
+### e. Adaptive Boosting (ADA)
+```{r}
+library(ada)
+
+model_ada <- ada(Fraude ~ ., data = training_table)
+prediction_ada <- predict(model_ada, testing_table[, -12])
+cm_ada <- table(testing_table$Fraude, prediction_ada)
+res_ada <- calculate_metrics(cm_ada)
+```
+
+### f. eXtreme Gradient Boosting (XGB)
+#### i. Loading and cleaning Data
+```{r}
+seguro_xgb <- read.csv(
+  "Seguros.csv",
+  header = TRUE,
+  stringsAsFactors = TRUE,
+  sep = ";"
+)
+```
+
+```{r}
+seguro_xgb$Interes <- factor(seguro_xgb$Interes, ordered = TRUE)
+
+seguro_xgb$Fiador <- ifelse(seguro_xgb$Fiador == "Si", "1", "0")
+seguro_xgb$Fiador2 <- ifelse(seguro_xgb$Fiador2 == "Si", "1", "0")
+seguro_xgb$OtroSeguro <- ifelse(seguro_xgb$OtroSeguro == "Si", "1", "0")
+seguro_xgb$Fraude <- ifelse(seguro_xgb$Fraude == "Si", "1", "0")
+```
+
+#### ii. Dummy Variables
+```{r}
+library(dummy)
+
+seguro_xgb_dummy <- dummy(seguro_xgb[-c(3,6:8,10,12)])
+
+seguro_clean_xgb <- cbind(seguro_xgb[-c(1,2,4,5,9,11)], seguro_xgb_dummy)
+seguro_clean_xgb <- as.data.frame(lapply(seguro_clean_xgb, as.numeric))
+```
+
+#### iii. Training and Testing Tables to Matrix
+```{r}
+size_xgb <- dim(seguro_xgb)
+n_xgb <- size[1]
+sample_xgb <- sample(1:n, floor(n_xgb * 0.25))
+
+training_table_xgb <- seguro_clean_xgb[-sample_xgb, ]
+testing_table_xgb <- seguro_clean_xgb[sample_xgb, ]
+```
+
+```{r}
+library(xgboost)
+
+training_matrix <- xgb.DMatrix(
+  data = data.matrix(training_table_xgb[, -6]),
+  label = data.matrix(training_table_xgb$Fraude)
+)
+
+testing_matrix <- xgb.DMatrix(
+  data = data.matrix(testing_table_xgb[, -6]),
+  label = data.matrix(testing_table_xgb$Fraude)
+)
+```
+
+#### iv. The variable to be predicted is stored
+```{r}
+predicted_var <- testing_table_xgb$Fraude
+```
+
+#### v. Model
+```{r}
+parameters <- list(
+  booster = "gbtree", objective = "binary:logistic", eta = 0.3, gamma = 0,
+  max_depth = 6, min_child_weight = 1, subsample = 1, colsample_bytree = 1
+)
+model_xgb <- xgb.train (
+  params = parameters, data = training_matrix, nrounds = 79, 
+  watchlist = list(train = training_matrix, test = testing_matrix),
+  print_every_n = 10, early_stop_round = 10, maximize = FALSE , eval_metric = "error"
+)
+
+prediction_xgb <- predict(model_xgb, testing_matrix)
+prediction_xgb <- ifelse(prediction_xgb > 0.5, 1, 0)
+
+cm_xgb <- table(prediction_xgb, predicted_var)
+res_xgb <- calculate_metrics(cm_xgb)
+```
+
+#### vi. Plots
+```{r}
+key_variables <- xgb.importance(feature_names = colnames(training_matrix), model = model_xgb)
+xgb.plot.importance(importance_matrix = key_variables)
+```
+
+### g. NNET
+#### i. Conversion of Categorical to Numeric Variables in a Dataframe
+```{r}
+seguro_numeric <- seguro
+factor_cols <- sapply(seguro_numeric, is.factor)
+seguro_numeric[factor_cols] <- lapply(seguro_numeric[factor_cols], function(x) as.numeric(as.factor(x)))
+```
+
+#### ii. Training and Testing Tables
+```{r}
+training_table_nnet <- seguro_numeric[-sample, ]
+testing_table_nnet <- seguro_numeric[sample, ]
+```
+
+#### iii. Balancing Data
+```{r}
+library(ROSE)
+
+balanced_data <- ROSE(Fraude ~ ., data = testing_table_nnet, seed = 1)$data
+```
+
+#### iv. Data Preparation for Classification Models
+```{r}
+predictors <- balanced_data[, -which(names(balanced_data) == "Fraude")]
+predictors_normalized <- scale(predictors)
+training_table_normalized <- as.data.frame(predictors_normalized)
+training_table_normalized$Fraude <- as.factor(balanced_data$Fraude)
+```
+
+#### v. Model
+```{r}
+library(caret)
+
+model_nnet <- train(
+  Fraude ~ ., data = training_table_normalized, method = "nnet",
+  trControl = trainControl(method = "cv", number = 5),
+  tuneLength = 5, trace = FALSE, maxit = 2000
+)
+
+# Normalize the predictor variables in the test set
+predictors_test <- scale(testing_table_nnet[, -which(names(testing_table_nnet) == "Fraude")])
+
+# Predictions in the test set
+prediction_nnet <- predict(model_nnet, newdata = as.data.frame(predictors_test))
+
+# Create the confusion matrix
+cm_nnet <- table(testing_table$Fraude, prediction_nnet)
+
+res_nnet <- calculate_metrics(cm_nnet)
+```
+
+### h. Neuralnet
+#### i. Loading and cleaning Data
+```{r}
+seguro_neuralnet <- read.csv(
+  "Seguros.csv",
+  header = TRUE,
+  stringsAsFactors = TRUE,
+  sep = ";"
+)
+```
+
+```{r}
+seguro_neuralnet$Interes <- factor(seguro_neuralnet$Interes, ordered = TRUE)
+seguro_neuralnet$Fiador <- ifelse(seguro_neuralnet$Fiador == "Si", "1", "0")
+seguro_neuralnet$Fiador2 <- ifelse(seguro_neuralnet$Fiador2 == "Si", "1", "0")
+seguro_neuralnet$OtroSeguro <- ifelse(seguro_neuralnet$OtroSeguro == "Si", "1", "0")
+seguro_neuralnet$Fraude <- ifelse(seguro_neuralnet$Fraude == "Si", "1", "0")
+```
+
+#### ii. Dummy Variables
+```{r}
+seguro_neuralnet_dummy <- dummy(seguro_neuralnet[-c(3,6:8,10,12)])
+
+seguro_clean_neuralnet <- cbind(seguro_neuralnet[-c(1,2,4,5,9,11)], seguro_neuralnet_dummy)
+seguro_clean_neuralnet <- as.data.frame(lapply(seguro_clean_neuralnet, as.numeric))
+```
+
+#### iii. Scaling the variable to predict
+```{r}
+seguro_clean_neuralnet[, -6] <- scale(seguro_clean_neuralnet[, -6])
+head(seguro_clean_neuralnet)
+```
+
+#### iv. Formula to get all variables
+```{r}
+names <- colnames(seguro_clean_neuralnet)
+formula <- as.formula(paste(
+  "Fraude ~", 
+  paste(names[!names %in% c("Fraude")], 
+        collapse = " + ")))
+```
+
+#### v. Training and Testing Tables
+```{r}
+size_neuralnet <- dim(seguro_clean_neuralnet)
+n_neuralnet <- size_neuralnet[1]
+sample_neuralnet <- sample(1:n_neuralnet, floor(n_neuralnet*0.25))
+
+training_table_neuralnet <- seguro_clean_neuralnet[-sample_neuralnet, ]
+testing_table_neuralnet  <- seguro_clean_neuralnet[sample_neuralnet, ]
+```
+
+#### vi. Model
+```{r}
+library(neuralnet)
+
+model_neuralnet <- neuralnet(
+  formula, data = training_table_neuralnet,
+  hidden = c(6,4,3), linear.output = FALSE,
+  threshold = 0.1, stepmax = 1e+06
+)
+
+prediction_neuralnet <- neuralnet::compute(model_neuralnet, testing_table_neuralnet[, -6])$net.result
+prediction_neuralnet <- as.factor(round(prediction_neuralnet, digits = 0))
+
+# confusion matrix
+cm_neuralnet <- table(testing_table_neuralnet$Fraude, prediction_neuralnet)
+res_neuralnet <- calculate_metrics(cm_neuralnet)
+```
+
+## 5. Uncalibrated Model DataFrame
+<div style="text-align: justify;">
+The following dataframe contains the main indicators of the above uncalibrated models. Although all the models have obtained good results, there is one model that stands out significantly above the others, which is k-Nearest Neighbor.
+</div>
+
+```{r echo=FALSE}
+total_models <- c(
+  "k-Nearest Neighbor", 
+  "Decision Tree", 
+  "Random Forests", 
+  "Kernel Linear", 
+  "Kernel Radial", 
+  "Kernel Polynomial", 
+  "Kernel Sigmoid",
+  "Adaptive Boosting (ADA)",
+  "eXtreme Gradient Boosting (XGB)",
+  "NNET",
+  "Neuralnet"
+)
+
+global_accuracy <- c(
+  res_kknn[["Global Accuracy"]],
+  res_DT[["Global Accuracy"]],
+  res_RF[["Global Accuracy"]],
+  res_linear[["Global Accuracy"]],
+  res_radial[["Global Accuracy"]],
+  res_polynomial[["Global Accuracy"]],
+  res_sigmoid[["Global Accuracy"]],
+  res_ada[["Global Accuracy"]],
+  res_xgb[["Global Accuracy"]],
+  res_nnet[["Global Accuracy"]],
+  res_neuralnet[["Global Accuracy"]]
+)
+
+global_error <- c(
+  res_kknn[["Global Error"]],
+  res_DT[["Global Error"]],
+  res_RF[["Global Error"]],
+  res_linear[["Global Error"]],
+  res_radial[["Global Error"]],
+  res_polynomial[["Global Error"]],
+  res_sigmoid[["Global Error"]],
+  res_ada[["Global Error"]],
+  res_xgb[["Global Error"]],
+  res_nnet[["Global Error"]],
+  res_neuralnet[["Global Error"]]
+)
+
+positive_precision <- c(
+  res_kknn[["Positive Precision"]],
+  res_DT[["Positive Precision"]],
+  res_RF[["Positive Precision"]],
+  res_linear[["Positive Precision"]],
+  res_radial[["Positive Precision"]],
+  res_polynomial[["Positive Precision"]],
+  res_sigmoid[["Positive Precision"]],
+  res_ada[["Positive Precision"]],
+  res_xgb[["Positive Precision"]],
+  res_nnet[["Positive Precision"]],
+  res_neuralnet[["Positive Precision"]]
+)
+
+negative_precision <- c(
+  res_kknn[["Negative Precision"]],
+  res_DT[["Negative Precision"]],
+  res_RF[["Negative Precision"]],
+  res_linear[["Negative Precision"]],
+  res_radial[["Negative Precision"]],
+  res_polynomial[["Negative Precision"]],
+  res_sigmoid[["Negative Precision"]],
+  res_ada[["Negative Precision"]],
+  res_xgb[["Negative Precision"]],
+  res_nnet[["Negative Precision"]],
+  res_neuralnet[["Negative Precision"]]
+)
+
+false_positives <- c(
+  res_kknn[["False Positives"]],
+  res_DT[["False Positives"]],
+  res_RF[["False Positives"]],
+  res_linear[["False Positives"]],
+  res_radial[["False Positives"]],
+  res_polynomial[["False Positives"]],
+  res_sigmoid[["False Positives"]],
+  res_ada[["False Positives"]],
+  res_xgb[["False Positives"]],
+  res_nnet[["False Positives"]],
+  res_neuralnet[["False Positives"]]
+)
+
+false_negatives <- c(
+  res_kknn[["False Negatives"]],
+  res_DT[["False Negatives"]],
+  res_RF[["False Negatives"]],
+  res_linear[["False Negatives"]],
+  res_radial[["False Negatives"]],
+  res_polynomial[["False Negatives"]],
+  res_sigmoid[["False Negatives"]],
+  res_ada[["False Negatives"]],
+  res_xgb[["False Negatives"]],
+  res_nnet[["False Negatives"]],
+  res_neuralnet[["False Negatives"]]
+)
+
+positive_assertivity <- c(
+  res_kknn[["Positive Assertivity"]],
+  res_DT[["Positive Assertivity"]],
+  res_RF[["Positive Assertivity"]],
+  res_linear[["Positive Assertivity"]],
+  res_radial[["Positive Assertivity"]],
+  res_polynomial[["Positive Assertivity"]],
+  res_sigmoid[["Positive Assertivity"]],
+  res_ada[["Positive Assertivity"]],
+  res_xgb[["Positive Assertivity"]],
+  res_nnet[["Positive Assertivity"]],
+  res_neuralnet[["Positive Assertivity"]]
+)
+
+negative_assertivity <- c(
+  res_kknn[["Negative Assertivity"]],
+  res_DT[["Negative Assertivity"]],
+  res_RF[["Negative Assertivity"]],
+  res_linear[["Negative Assertivity"]],
+  res_radial[["Negative Assertivity"]],
+  res_polynomial[["Negative Assertivity"]],
+  res_sigmoid[["Negative Assertivity"]],
+  res_ada[["Negative Assertivity"]],
+  res_xgb[["Negative Assertivity"]],
+  res_nnet[["Negative Assertivity"]],
+  res_neuralnet[["Negative Assertivity"]]
+)
+
+uncalibrated_metrics <- data.frame(
+  Model = total_models,
+  Global_Accuracy = global_accuracy,
+  Global_Error = global_error,
+  Positive_Precision = positive_precision,
+  Negative_Precision = negative_precision,
+  False_Positives = false_positives,
+  False_Negatives = false_negatives,
+  Positive_Assertivity = positive_assertivity,
+  Negative_Assertivity = negative_assertivity
+)
+
+uncalibrated_metrics
+```
+
+## 6. Density Plots
+<div style="text-align: justify;">
+Density plots will help us to determine which are the best variables to use to predict the `Fraude` variable.
+</div>
+
+```{r echo=FALSE}
+library(ggplot2)
+library(dplyr)
+library(forcats)
+```
+
+### Quantitative Variables
+<div style="text-align: justify;">
+In density plots for numerical variables, it is important to ensure that the densities are as non-overlapping as possible. This facilitates visual comparison and makes it possible to identify patterns or differences between the distributions of the variables.
+</div>
+
+#### a. Monto Asegurado
+<div style="text-align: justify;">
+The `MontoAsegurado` variable is a very poor predictor as it is highly overlapping.
+</div>
+
+```{r echo=FALSE}
+ggplot(seguro, aes_string("MontoAsegurado", fill = "Fraude")) +
+  geom_density(alpha = .65) +
+  theme_minimal() +
+  theme(text = element_text(size = 15)) +
+  labs(title = "Density of the variable 'MontoAsegurado' according to 'Fraude'",
+       y = "Density", x = "MontoAsegurado")
+```
+
+#### b. Edad
+<div style="text-align: justify;">
+The `Edad` variable is also a very poor predictor variable for the same reason, it is very overlapping.
+</div>
+
+```{r echo=FALSE}
+ggplot(seguro, aes_string("Edad", fill = "Fraude")) +
+  geom_density(alpha = .65) +
+  theme_minimal() +
+  theme(text = element_text(size = 15)) +
+  labs(title = "Density of the variable 'Edad' according to 'Fraude'",
+       y = "Density", x = "Edad")
+```
+
+### Qualitative Variables
+<div style="text-align: justify;">
+</div>
+
+```{r echo=FALSE}
+dist.x.predict <- function(data, variable, predict.variable) {
+  data. <- data %>%
+    group_by_(variable, predict.variable) %>%
+    summarise(count = n()) %>%
+    mutate(prop = round(count/sum(count),4))
+  return(data.)
+}
+define.colors <- function(n) {
+  hues <- seq(15, 375, length = n + 1)
+  hcl(h = hues, l = 65, c = 100)[1:n]
+}  
+colors <- define.colors(length(unique(seguro[,'Fraude'])))
+```
+
+#### a. Interes
+<div style="text-align: justify;">
+The variable `Interes` is a very bad predictor variable, since in the great majority of observations it has 100% of the observation, the only one that can be useful is `Interes 15`, which contains a considerable separation with respect to the others.
+</div>
+
+```{r echo=FALSE}
+label.size <- 9.5 - length(unique(seguro[, 'Interes']))
+label.size <- ifelse(label.size < 3, 3, label.size)
+
+# Calculate the distribution and proportion
+seguro. <- seguro %>%
+  count(Interes, Fraude) %>%
+  group_by(Interes) %>%
+  mutate(prop = n / sum(n))
+
+# Assign the `count` column
+seguro.$count <- seguro.$n
+
+# Create plot
+ggplot(seguro., aes(x = factor(Interes), y = prop, fill = Fraude)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(count, " (", scales::percent(prop), ")"), y = prop), color = "gray90",
+            position = position_stack(vjust = .5), size = label.size) +
+  theme_minimal() +
+  theme(text = element_text(size = 15)) +
+  scale_fill_manual(values = colors) +
+  coord_flip() +
+  labs(title = "Relative distribution of the variable 'Interes' according to 'Fraude'",
+       x = "Interes", y = "Density") +
+  theme(legend.position = 'top') +
+  guides(fill = guide_legend(title = "Fraude"))
+```
+
+#### b. Tipo
+<div style="text-align: justify;">
+The `Tipo` variable is a very poor predictor variable, because it has a large imbalance of the observation Si and cannot become as significant to use in the model.
+</div>
+
+```{r echo=FALSE}
+label.size <- 9.5 - length(unique(seguro[,'Tipo']))
+label.size <- ifelse(label.size < 3, 3, label.size)
+seguro. <- dist.x.predict(seguro, 'Tipo', 'Fraude')
+ggplot(seguro., aes(fct_reorder(seguro.[["Tipo"]], count, .desc = TRUE), prop, fill = seguro.[["Fraude"]])) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(count, " (", scales::percent(prop), ")"), y = prop), color = "gray90",
+            position = position_stack(vjust = .5), size = label.size) +
+  theme_minimal() +
+  theme(text = element_text(size = 15)) +
+  scale_fill_manual(values = colors) +
+  coord_flip() +
+  labs(title = "Relative distribution of the variable 'Tipo' according to 'Fraude'",
+       x = "Tipo", y = "Density") +
+  theme(legend.position = 'top') +
+  guides(fill = guide_legend(title = "Fraude"))
+```
+
+#### c. Tipo Pago
+<div style="text-align: justify;">
+The `TipoPago` variable is also a very poor predictor variable, because it does not have a considerable separation. 
+</div>
+
+```{r echo=FALSE}
+label.size <- 9.5 - length(unique(seguro[,'TipoPago']))
+label.size <- ifelse(label.size < 3, 3, label.size)
+seguro. <- dist.x.predict(seguro, 'TipoPago', 'Fraude')
+ggplot(seguro., aes(fct_reorder(seguro.[["TipoPago"]], count, .desc = TRUE), prop, fill = seguro.[["Fraude"]])) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(count, " (", scales::percent(prop), ")"), y = prop), color = "gray90",
+            position = position_stack(vjust = .5), size = label.size) +
+  theme_minimal() +
+  theme(text = element_text(size = 15)) +
+  scale_fill_manual(values = colors) +
+  coord_flip() +
+  labs(title = "Relative distribution of the variable 'TipoPago' according to 'Fraude'",
+       x = "TipoPago", y = "Density") +
+  theme(legend.position = 'top') +
+  guides(fill = guide_legend(title = "Fraude"))
+```
+
+#### d. Modo Pago
+<div style="text-align: justify;">
+The `ModoPago` variable is very good, since it has a good distribution of observations except for the `Tarjeta` observation, which has a distribution of almost zero.
+</div>
+
+```{r echo=FALSE}
+label.size <- 9.5 - length(unique(seguro[,'ModoPago']))
+label.size <- ifelse(label.size < 3, 3, label.size)
+seguro. <- dist.x.predict(seguro, 'ModoPago', 'Fraude')
+ggplot(seguro., aes(fct_reorder(seguro.[["ModoPago"]], count, .desc = TRUE), prop, fill = seguro.[["Fraude"]])) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(count, " (", scales::percent(prop), ")"), y = prop), color = "gray90",
+            position = position_stack(vjust = .5), size = label.size) +
+  theme_minimal() +
+  theme(text = element_text(size = 15)) +
+  scale_fill_manual(values = colors) +
+  coord_flip() +
+  labs(title = "Relative distribution of the variable 'ModoPago' according to 'Fraude'",
+       x = "ModoPago", y = "Density") +
+  theme(legend.position = 'top') +
+  guides(fill = guide_legend(title = "Fraude"))
+```
+
+#### e. Fiador
+<div style="text-align: justify;">
+The `Fiador` variable is a bad variable because it has a low distribution of its observations.
+</div>
+
+```{r echo=FALSE}
+label.size <- 9.5 - length(unique(seguro[,'Fiador']))
+label.size <- ifelse(label.size < 3, 3, label.size)
+seguro. <- dist.x.predict(seguro, 'Fiador', 'Fraude')
+ggplot(seguro., aes(fct_reorder(seguro.[["Fiador"]], count, .desc = TRUE), prop, fill = seguro.[["Fraude"]])) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(count, " (", scales::percent(prop), ")"), y = prop), color = "gray90",
+            position = position_stack(vjust = .5), size = label.size) +
+  theme_minimal() +
+  theme(text = element_text(size = 15)) +
+  scale_fill_manual(values = colors) +
+  coord_flip() +
+  labs(title = "Relative distribution of the variable 'Fiador' according to 'Fraude'",
+       x = "Fiador", y = "Density") +
+  theme(legend.position = 'top') +
+  guides(fill = guide_legend(title = "Fraude"))
+```
+
+#### f. Fiador 2
+<div style="text-align: justify;">
+The `Fiador 2` variable is a bad variable because it has a low distribution of its observations.
+</div>
+
+```{r echo=FALSE}
+label.size <- 9.5 - length(unique(seguro[,'Fiador2']))
+label.size <- ifelse(label.size < 3, 3, label.size)
+seguro. <- dist.x.predict(seguro, 'Fiador2', 'Fraude')
+ggplot(seguro., aes(fct_reorder(seguro.[["Fiador2"]], count, .desc = TRUE), prop, fill = seguro.[["Fraude"]])) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(count, " (", scales::percent(prop), ")"), y = prop), color = "gray90",
+            position = position_stack(vjust = .5), size = label.size) +
+  theme_minimal() +
+  theme(text = element_text(size = 15)) +
+  scale_fill_manual(values = colors) +
+  coord_flip() +
+  labs(title = "Relative distribution of the variable 'Fiador2' according to 'Fraude'",
+       x = "Fiador2", y = "Density") +
+  theme(legend.position = 'top') +
+  guides(fill = guide_legend(title = "Fraude"))
+```
+
+#### g. Otro Seguro
+<div style="text-align: justify;">
+The variable `OtroSeguro` is a poor predictor variable, but the observation of `Si` could be used as it has a decent distribution, but I don't think it would make a significant change to the accuracy of the model.
+</div>
+
+```{r echo=FALSE}
+label.size <- 9.5 - length(unique(seguro[,'OtroSeguro']))
+label.size <- ifelse(label.size < 3, 3, label.size)
+seguro. <- dist.x.predict(seguro, 'OtroSeguro', 'Fraude')
+ggplot(seguro., aes(fct_reorder(seguro.[["OtroSeguro"]], count, .desc = TRUE), prop, fill = seguro.[["Fraude"]])) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(count, " (", scales::percent(prop), ")"), y = prop), color = "gray90",
+            position = position_stack(vjust = .5), size = label.size) +
+  theme_minimal() +
+  theme(text = element_text(size = 15)) +
+  scale_fill_manual(values = colors) +
+  coord_flip() +
+  labs(title = "Relative distribution of the variable 'OtroSeguro' according to 'Fraude'",
+       x = "OtroSeguro", y = "Density") +
+  theme(legend.position = 'top') +
+  guides(fill = guide_legend(title = "Fraude"))
+```
+
+#### h. Record
+<div style="text-align: justify;">
+The `Record` variable is one of the best predictor variables since it does contain a good distribution of its observations except for `R0` and `R2`.
+</div>
+
+```{r echo=FALSE}
+label.size <- 9.5 - length(unique(seguro[,'Record']))
+label.size <- ifelse(label.size < 3, 3, label.size)
+seguro. <- dist.x.predict(seguro, 'Record', 'Fraude')
+ggplot(seguro., aes(fct_reorder(as.factor(seguro.[["Record"]]), -count), prop, fill = seguro.[["Fraude"]])) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(count, " (", scales::percent(prop), ")"), y = prop), color = "gray90",
+            position = position_stack(vjust = .5), size = label.size) +
+  theme_minimal() +
+  theme(text = element_text(size = 15)) +
+  scale_fill_manual(values = colors) +
+  coord_flip() +
+  labs(title = "Relative distribution of the variable 'Record' according to 'Fraude'",
+       x = "Record", y = "Density") +
+  theme(legend.position = 'top') +
+  guides(fill = guide_legend(title = "Fraude"))
+```
+
+#### i. Estado Civil
+<div style="text-align: justify;">
+The `EstadoCivil` variable is a poor predictor variable but the observation of `Viudo` can be rescued as it has a decent distribution.
+</div>
+
+```{r echo=FALSE}
+label.size <- 9.5 - length(unique(seguro[,'EstadoCivil']))
+label.size <- ifelse(label.size < 3, 3, label.size)
+seguro. <- dist.x.predict(seguro, 'EstadoCivil', 'Fraude')
+ggplot(seguro., aes(fct_reorder(seguro.[["EstadoCivil"]], count, .desc = TRUE), prop, fill = seguro.[["Fraude"]])) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(count, " (", scales::percent(prop), ")"), y = prop), color = "gray90",
+            position = position_stack(vjust = .5), size = label.size) +
+  theme_minimal() +
+  theme(text = element_text(size = 15)) +
+  scale_fill_manual(values = colors) +
+  coord_flip() +
+  labs(title = "Relative distribution of the variable 'EstadoCivil' according to 'Fraude'",
+       x = "EstadoCivil", y = "Density") +
+  theme(legend.position = 'top') +
+  guides(fill = guide_legend(title = "Fraude"))
+```
+
+## 7. Predictive models calibrated with variable selection
+<div style="text-align: justify;">
+Next, the predictive models will be calibrated with the best variables that were analyzed in the section on density plots, in this case the variables will be used:
+
+- `ModoPago`
+- `Record`
+
+For models that use dummy variables, the following will be used:
+
+- `Interes_15`
+- `ModoPago_NoDefinido`
+- `ModoPago_Cajas`
+- `EstadoCivil_Viudo`
+- `Record_R2`
+- `Record_R3`
+- `Record_R4`
+- `Record_R5`
+- `Record_R6`
+- `Record_R7`
+</div>
+### a. k-Nearest Neighbor Classifier
+```{r}
+model_kknn_adj <- train.kknn(Fraude ~ ModoPago+Record, data = training_table, kmax = floor(sqrt(n)))
+prediction_kknn_adj <- predict(model_kknn_adj, testing_table[, -12])
+cm_kknn_adj <- table(testing_table[, 12], prediction_kknn_adj)
+res_kknn_adj <- calculate_metrics(cm_kknn_adj)
+```
+
+### b. Decision Trees
+```{r}
+model_DT_adj <- rpart(Fraude ~ ModoPago+Record, data = training_table, minsplit = 2)
+prediction_DT_adj <- predict(model_DT_adj, testing_table, type = "class")
+cm_DT_adj <- table(testing_table$Fraude, prediction_DT_adj)
+res_DT_adj <-  calculate_metrics(cm_DT_adj)
+```
+
+### c. Random Trees
+```{r}
+model_RF_adj <- randomForest(Fraude ~ ModoPago+Record, data = training_table, importance = TRUE, ntree = 1000, mtry = 2)
+prediction_RF_adj <- predict(model_RF_adj, testing_table[, -12])
+cm_RF_adj <- table(testing_table$Fraude, prediction_RF_adj)
+res_RF_adj <- calculate_metrics(cm_RF_adj)
+```
+
+### d. Support Vector Machines (SVM)
+#### i. Kernel Linear
+```{r}
+model_linear_adj <- svm(Fraude ~ ModoPago+Record, data = training_table, kernel = "linear")
+prediction_linear_adj <- predict(model_linear_adj, testing_table)
+cm_linear_adj <- table(testing_table[, 12], prediction_linear_adj)
+res_linear_adj <- calculate_metrics(cm_linear_adj)
+```
+
+#### ii. Kernel Radial
+```{r}
+model_radial_adj <- svm(Fraude ~ ModoPago+Record, data = training_table, kernel = "radial")
+prediction_radial_adj <- predict(model_radial_adj, testing_table)
+cm_radial_adj <- table(testing_table[, 12], prediction_radial_adj)
+res_radial_adj <- calculate_metrics(cm_radial_adj)
+```
+
+#### iii. Kernel Polynomial
+```{r}
+model_polynomial_adj <- svm(Fraude ~ ModoPago+Record, data = training_table, kernel = "polynomial")
+prediction_polynomial_adj <- predict(model_polynomial_adj, testing_table)
+cm_polynomial_adj <- table(testing_table[, 12], prediction_polynomial_adj)
+res_polynomial_adj <- calculate_metrics(cm_polynomial_adj)
+```
+
+#### iv. Kernel Sigmoid
+```{r}
+model_sigmoid_adj <- svm(Fraude ~ ModoPago+Record, data = training_table, kernel = "sigmoid")
+prediction_sigmoid_adj <- predict(model_sigmoid_adj, testing_table)
+cm_sigmoid_adj <- table(testing_table[, 12], prediction_sigmoid_adj)
+res_sigmoid_adj <- calculate_metrics(cm_sigmoid_adj)
+```
+
+### e. Adaptive Boosting (ADA)
+```{r}
+model_ada_adj <- ada(
+  Fraude ~ ModoPago+Record, data = training_table, iter = 100, type = 'real',
+  control = rpart.control(minsplit = 2, maxdepth = 30)
+)
+prediction_ada_adj <- predict(model_ada_adj, testing_table[, -12])
+cm_ada_adj <- table(testing_table$Fraude, prediction_ada_adj)
+res_ada_adj <- calculate_metrics(cm_ada_adj)
+```
+
+### f. eXtreme Gradient Boosting (XGB)
+#### i. Training and Testing Matrix
+```{r}
+training_matrix_adj <- xgb.DMatrix(
+  data = data.matrix(training_table_xgb[, -c(1:18,20:28,31,41)]),
+  label = data.matrix(training_table_xgb$Fraude)
+)
+
+testing_matrix_adj <- xgb.DMatrix(
+  data = data.matrix(testing_table_xgb[, -c(1:18,20:28,31,41)]),
+  label = data.matrix(testing_table_xgb$Fraude)
+)
+```
+
+#### ii. Model
+```{r}
+parameters <- list(
+  booster = "gbtree", objective = "binary:logistic", eta = 0.3, gamma = 0,
+  max_depth = 6, min_child_weight = 1, subsample = 1, colsample_bytree = 1
+)
+model_xgb_adj <- xgb.train (
+  params = parameters, data = training_matrix_adj, nrounds = 79, 
+  watchlist = list(train = training_matrix_adj, test = testing_matrix_adj),
+  print_every_n = 10, early_stop_round = 10, maximize = FALSE , eval_metric = "error"
+)
+
+prediction_xgb_adj <- predict(model_xgb_adj, testing_matrix_adj)
+prediction_xgb_adj <- ifelse(prediction_xgb_adj > 0.5, 1, 0)
+
+cm_xgb_adj <- table(prediction_xgb_adj, predicted_var)
+res_xgb_adj <- calculate_metrics(cm_xgb_adj)
+```
+
+### g. NNET
+```{r}
+model_nnet_adj <- train(
+  Fraude ~ ModoPago+Record, data = training_table_normalized, method = "nnet",
+  trControl = trainControl(method = "cv", number = 5),
+  tuneLength = 5, trace = FALSE, maxit = 2000
+)
+
+# Normalize the predictor variables in the test set
+predictors_test_adj <- scale(testing_table_nnet[, -which(names(testing_table_nnet) == "Fraude")])
+
+# Predictions in the test set
+prediction_nnet_adj <- predict(model_nnet_adj, newdata = as.data.frame(predictors_test_adj))
+
+# Create the confusion matrix
+cm_nnet_adj <- table(testing_table_nnet$Fraude, prediction_nnet_adj)
+
+res_nnet_adj <- calculate_metrics(cm_nnet_adj)
+```
+
+### h. Neuralnet
+#### i. Formula to get the best predictors
+```{r}
+formula_adj <- as.formula(paste(
+  "Fraude ~ Interes_15+ModoPago_NoDefinido+ModoPago_Cajas+EstadoCivil_Viudo+Record_R2+Record_R3+Record_R4+Record_R5+Record_R6+Record_R7"
+))
+```
+
+#### ii. Model
+```{r}
+model_neuralnet_adj <- neuralnet(
+  formula_adj, data = training_table_neuralnet,
+  hidden = c(6,4,3), linear.output = FALSE,
+  threshold = 0.1, stepmax = 1e+06
+)
+
+prediction_neuralnet_adj <- neuralnet::compute(model_neuralnet_adj, testing_table_neuralnet[, -6])$net.result
+prediction_neuralnet_adj <- as.factor(round(prediction_neuralnet_adj, digits = 0))
+
+cm_original <- table(testing_table_neuralnet$Fraude, prediction_neuralnet_adj)
+
+# Check if all predictions are equal to 0
+if(all(prediction_neuralnet_adj == 0)) {
+  # Create a confusion matrix with zeros instead of prediction_neuralnet_adj
+  actual_levels <- levels(factor(testing_table_neuralnet$Fraude))
+  predicted_levels <- c("0", "1")  # Assuming binary levels
+  
+  # Create an empty matrix with unique levels as row and column names
+  cm_neuralnet_adj <- matrix(0, nrow = length(actual_levels), ncol = length(predicted_levels),
+                              dimnames = list(actual_levels, predicted_levels))
+  
+  # Fill the matrix with values from the original confusion matrix
+  cm_neuralnet_adj[rownames(cm_original), colnames(cm_original)] <- cm_original
+} else {
+  # If not all predictions are zero, keep the original confusion matrix
+  cm_neuralnet_adj <- cm_original
+}
+res_neuralnet_adj <- calculate_metrics(cm_neuralnet_adj)
+```
+
+## 8. Models DataFrame
+```{r echo=FALSE}
+total_models <- c(
+  "k-Nearest Neighbor", 
+  "Decision Tree", 
+  "Random Forests", 
+  "Kernel Linear", 
+  "Kernel Radial", 
+  "Kernel Polynomial", 
+  "Kernel Sigmoid",
+  "Adaptive Boosting (ADA)",
+  "eXtreme Gradient Boosting (XGB)",
+  "NNET",
+  "Neuralnet"
+)
+
+global_accuracy <- c(
+  res_kknn_adj[["Global Accuracy"]],
+  res_DT_adj[["Global Accuracy"]],
+  res_RF_adj[["Global Accuracy"]],
+  res_linear_adj[["Global Accuracy"]],
+  res_radial_adj[["Global Accuracy"]],
+  res_polynomial_adj[["Global Accuracy"]],
+  res_sigmoid_adj[["Global Accuracy"]],
+  res_ada_adj[["Global Accuracy"]],
+  res_xgb_adj[["Global Accuracy"]],
+  res_nnet_adj[["Global Accuracy"]],
+  res_neuralnet_adj[["Global Accuracy"]]
+)
+
+global_error <- c(
+  res_kknn_adj[["Global Error"]],
+  res_DT_adj[["Global Error"]],
+  res_RF_adj[["Global Error"]],
+  res_linear_adj[["Global Error"]],
+  res_radial_adj[["Global Error"]],
+  res_polynomial_adj[["Global Error"]],
+  res_sigmoid_adj[["Global Error"]],
+  res_ada_adj[["Global Error"]],
+  res_xgb_adj[["Global Error"]],
+  res_nnet_adj[["Global Error"]],
+  res_neuralnet_adj[["Global Error"]]
+)
+
+positive_precision <- c(
+  res_kknn_adj[["Positive Precision"]],
+  res_DT_adj[["Positive Precision"]],
+  res_RF_adj[["Positive Precision"]],
+  res_linear_adj[["Positive Precision"]],
+  res_radial_adj[["Positive Precision"]],
+  res_polynomial_adj[["Positive Precision"]],
+  res_sigmoid_adj[["Positive Precision"]],
+  res_ada_adj[["Positive Precision"]],
+  res_xgb_adj[["Positive Precision"]],
+  res_nnet_adj[["Positive Precision"]],
+  res_neuralnet_adj[["Positive Precision"]]
+)
+
+negative_precision <- c(
+  res_kknn_adj[["Negative Precision"]],
+  res_DT_adj[["Negative Precision"]],
+  res_RF_adj[["Negative Precision"]],
+  res_linear_adj[["Negative Precision"]],
+  res_radial_adj[["Negative Precision"]],
+  res_polynomial_adj[["Negative Precision"]],
+  res_sigmoid_adj[["Negative Precision"]],
+  res_ada_adj[["Negative Precision"]],
+  res_xgb_adj[["Negative Precision"]],
+  res_nnet_adj[["Negative Precision"]],
+  res_neuralnet_adj[["Negative Precision"]]
+)
+
+false_positives <- c(
+  res_kknn_adj[["False Positives"]],
+  res_DT_adj[["False Positives"]],
+  res_RF_adj[["False Positives"]],
+  res_linear_adj[["False Positives"]],
+  res_radial_adj[["False Positives"]],
+  res_polynomial_adj[["False Positives"]],
+  res_sigmoid_adj[["False Positives"]],
+  res_ada_adj[["False Positives"]],
+  res_xgb_adj[["False Positives"]],
+  res_nnet_adj[["False Positives"]],
+  res_neuralnet_adj[["False Positives"]]
+)
+
+false_negatives <- c(
+  res_kknn_adj[["False Negatives"]],
+  res_DT_adj[["False Negatives"]],
+  res_RF_adj[["False Negatives"]],
+  res_linear_adj[["False Negatives"]],
+  res_radial_adj[["False Negatives"]],
+  res_polynomial_adj[["False Negatives"]],
+  res_sigmoid_adj[["False Negatives"]],
+  res_ada_adj[["False Negatives"]],
+  res_xgb_adj[["False Negatives"]],
+  res_nnet_adj[["False Negatives"]],
+  res_neuralnet_adj[["False Negatives"]]
+)
+
+positive_assertivity <- c(
+  res_kknn_adj[["Positive Assertivity"]],
+  res_DT_adj[["Positive Assertivity"]],
+  res_RF_adj[["Positive Assertivity"]],
+  res_linear_adj[["Positive Assertivity"]],
+  res_radial_adj[["Positive Assertivity"]],
+  res_polynomial_adj[["Positive Assertivity"]],
+  res_sigmoid_adj[["Positive Assertivity"]],
+  res_ada_adj[["Positive Assertivity"]],
+  res_xgb_adj[["Positive Assertivity"]],
+  res_nnet_adj[["Positive Assertivity"]],
+  res_neuralnet_adj[["Positive Assertivity"]]
+)
+
+negative_assertivity <- c(
+  res_kknn_adj[["Negative Assertivity"]],
+  res_DT_adj[["Negative Assertivity"]],
+  res_RF_adj[["Negative Assertivity"]],
+  res_linear_adj[["Negative Assertivity"]],
+  res_radial_adj[["Negative Assertivity"]],
+  res_polynomial_adj[["Negative Assertivity"]],
+  res_sigmoid_adj[["Negative Assertivity"]],
+  res_ada_adj[["Negative Assertivity"]],
+  res_xgb_adj[["Negative Assertivity"]],
+  res_nnet_adj[["Negative Assertivity"]],
+  res_neuralnet_adj[["Negative Assertivity"]]
+)
+
+calibrated_metrics <- data.frame(
+  Model = total_models,
+  Global_Accuracy = global_accuracy,
+  Global_Error = global_error,
+  Positive_Precision = positive_precision,
+  Negative_Precision = negative_precision,
+  False_Positives = false_positives,
+  False_Negatives = false_negatives,
+  Positive_Assertivity = positive_assertivity,
+  Negative_Assertivity = negative_assertivity
+)
+
+calibrated_metrics
+```
+
+## 9. Applying the best model 
+```{r}
+seguro_na <- read.csv(
+  "SegurosNA.csv",
+  header = TRUE,
+  stringsAsFactors = TRUE,
+  sep = ";"
+)
+
+# Verify and transform the data
+seguro_na$Interes <- factor(seguro_na$Interes, ordered = TRUE)
+
+# Making predictions with the trained model
+predictions_na <- predict(model_DT, newdata = seguro_na, type = "class")
+
+# Assign the predictions to the Fraud column in seguro_na
+seguro_na$Fraude <- predictions_na
+
+seguro_na_si <- subset(seguro_na, Fraude == "Si")
+head(seguro_na_si)
+```
+
